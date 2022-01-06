@@ -35,6 +35,9 @@ static std::string supported_devices_str;
 bool open_models(const fs::path &yukarin_s_path, const fs::path &yukarin_sa_path, const fs::path &decode_path,
                  std::vector<unsigned char> &yukarin_s_model, std::vector<unsigned char> &yukarin_sa_model,
                  std::vector<unsigned char> &decode_model) {
+  // Open models in specified path into specified pointers
+
+  // InputFileStream of yukarin_s/yukarin_sa/decode
   std::ifstream yukarin_s_file(yukarin_s_path, std::ios::binary), yukarin_sa_file(yukarin_sa_path, std::ios::binary),
       decode_file(decode_path, std::ios::binary);
   if (!yukarin_s_file.is_open() || !yukarin_sa_file.is_open() || !decode_file.is_open()) {
@@ -42,9 +45,11 @@ bool open_models(const fs::path &yukarin_s_path, const fs::path &yukarin_sa_path
     return false;
   }
 
+  // Read the models from corresponding sterams
   yukarin_s_model = std::vector<unsigned char>(std::istreambuf_iterator<char>(yukarin_s_file), {});
   yukarin_sa_model = std::vector<unsigned char>(std::istreambuf_iterator<char>(yukarin_sa_file), {});
   decode_model = std::vector<unsigned char>(std::istreambuf_iterator<char>(decode_file), {});
+
   return true;
 }
 
@@ -96,8 +101,13 @@ struct Status {
         decode(nullptr) {}
 
   bool load() {
+    // Root path of model data
     // deprecated in C++20; Use char8_t for utf-8 char in the future.
     fs::path root = fs::u8path(root_dir_path);
+    // {root}/metas.json
+    // {root}/yukarin_s.onnx
+    // {root}/yukarin_sa.onnx
+    // {root}/decode.onnx
 
     if (!open_metas(root / "metas.json", metas)) {
       return false;
@@ -110,11 +120,14 @@ struct Status {
       }
     }
 
+    // Open ONNX model binaries from "{root}/{model}.onnx"
     std::vector<unsigned char> yukarin_s_model, yukarin_sa_model, decode_model;
     if (!open_models(root / "yukarin_s.onnx", root / "yukarin_sa.onnx", root / "decode.onnx", yukarin_s_model,
                      yukarin_sa_model, decode_model)) {
       return false;
     }
+
+    // Construct ORT sessions (`yukarin_s`, `yukarin_sa` and `decode`) with ONNX models.
     Ort::SessionOptions session_options;
     yukarin_s = Ort::Session(env, yukarin_s_model.data(), yukarin_s_model.size(), session_options);
     yukarin_sa = Ort::Session(env, yukarin_sa_model.data(), yukarin_sa_model.size(), session_options);
@@ -138,6 +151,7 @@ struct Status {
   std::unordered_set<int64_t> supported_styles;
 };
 
+// A file-wide global object which hold many many info and models
 static std::unique_ptr<Status> status;
 
 template <typename T, size_t Rank>
@@ -158,6 +172,7 @@ bool validate_speaker_id(int64_t speaker_id) {
 }
 
 bool initialize(const char *root_dir_path, bool use_gpu) {
+  // root_dir_path: Model data root
   initialized = false;
   if (use_gpu && !get_supported_devices().cuda) {
     error_message = GPU_NOT_SUPPORTED_ERR;
@@ -278,6 +293,7 @@ bool yukarin_sa_forward(int64_t length, int64_t *vowel_phoneme_list, int64_t *co
 }
 
 bool decode_forward(int64_t length, int64_t phoneme_size, float *f0, float *phoneme, int64_t *speaker_id, float *output) {
+  // Execute unit2wave with the initialized ORT session (model).
   if (!initialized) {
     error_message = NOT_INITIALIZED_ERR;
     return false;
@@ -291,10 +307,13 @@ bool decode_forward(int64_t length, int64_t phoneme_size, float *f0, float *phon
     const std::array<int64_t, 1> wave_shape{length * 256};
     const std::array<int64_t, 2> f0_shape{length, 1}, phoneme_shape{length, phoneme_size};
 
+    // Pack the inputs (fo, phoneme, speaker_id)
     std::array<Ort::Value, 3> input_tensor = {to_tensor(f0, f0_shape), to_tensor(phoneme, phoneme_shape),
                                               to_tensor(speaker_id, speaker_shape)};
+    // Reserve Output
     Ort::Value output_tensor = to_tensor(output, wave_shape);
 
+    // Run the model with packed inputs then output to reserved area
     status->decode.Run(Ort::RunOptions{nullptr}, inputs, input_tensor.data(), input_tensor.size(), outputs,
                        &output_tensor, 1);
   } catch (const Ort::Exception &e) {
